@@ -57,7 +57,7 @@ extern "C" {
 #endif
 
 //------------- Classes -------------//
-#define CFG_TUD_CDC              1   // serielle Statusausgabe (Log) im Spielmodus
+#define CFG_TUD_CDC              0
 #define CFG_TUD_MSC              1
 #define CFG_TUD_HID              0
 #define CFG_TUD_MIDI             0
@@ -66,11 +66,6 @@ extern "C" {
 // Mass storage transfer buffer size. The host writes our 4096-byte sectors in
 // chunks of this size (see usb_msc.c, which reassembles a full sector).
 #define CFG_TUD_MSC_EP_BUFSIZE   512
-
-// CDC (Log): kleine Puffer, es wird nur gesendet.
-#define CFG_TUD_CDC_RX_BUFSIZE   64
-#define CFG_TUD_CDC_TX_BUFSIZE   1024
-#define CFG_TUD_CDC_EP_BUFSIZE   64
 
 #ifdef __cplusplus
 }

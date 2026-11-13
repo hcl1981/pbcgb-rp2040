@@ -13,11 +13,6 @@
 #include "flash_fs.h"
 #include <string.h>
 
-// Medium present only in USB stick mode. In game mode the device is still
-// enumerated (for the CDC log), but the drive reports "no medium" so the host
-// never writes the flash the emulator is reading from (main.cpp sets this).
-volatile bool g_msc_medium_present = true;
-
 // One-sector scratch buffer for read/write reassembly.
 static uint8_t  s_sect_buf[PBGB_FS_SECTOR_SIZE];
 static int32_t  s_sect_num = -1;   // sector currently held in s_sect_buf, or -1
@@ -48,10 +43,7 @@ void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8], uint8_t product_id[16
 
 // Medium is always present.
 bool tud_msc_test_unit_ready_cb(uint8_t lun) {
-    if (!g_msc_medium_present) {
-        tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x3A, 0x00);   // medium not present
-        return false;
-    }
+    (void)lun;
     return true;
 }
 
@@ -72,7 +64,6 @@ bool tud_msc_is_writable_cb(uint8_t lun) {
 int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
                           void *buffer, uint32_t bufsize) {
     (void)lun;
-    if (!g_msc_medium_present) return -1;
     if (lba >= PBGB_FS_SECTOR_COUNT) return -1;
     if (offset + bufsize > PBGB_FS_SECTOR_SIZE) return -1;
 
@@ -92,7 +83,6 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
 int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset,
                            uint8_t *buffer, uint32_t bufsize) {
     (void)lun;
-    if (!g_msc_medium_present) return -1;
     if (lba >= PBGB_FS_SECTOR_COUNT) return -1;
     if (offset + bufsize > PBGB_FS_SECTOR_SIZE) return -1;
 

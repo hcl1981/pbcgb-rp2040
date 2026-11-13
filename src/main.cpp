@@ -111,14 +111,12 @@ static const unsigned kAudioSwing = 320;
 // ---- Pico SDK (no Arduino core) ----
 #include <string.h>
 #include <stdio.h>
-#include <stdarg.h>
 #include <strings.h>   // strcasecmp
 #include <hardware/clocks.h>
 #include <hardware/flash.h>
 #include <hardware/sync.h>
 #include <hardware/gpio.h>
 #include <hardware/watchdog.h>
-#include <hardware/structs/vreg_and_chip_reset.h>
 #include <hardware/vreg.h>
 #include <hardware/pwm.h>
 #include <hardware/dma.h>
@@ -130,7 +128,7 @@ static const unsigned kAudioSwing = 320;
 // The original sketch used a handful of Arduino runtime helpers. Map them to
 // their pico-sdk equivalents so the emulator/menu code stays untouched.
 static inline uint32_t millis() { return to_ms_since_boot(get_absolute_time()); }
-static void delay(uint32_t ms);   // unten: bedient waehrenddessen USB (Log)
+static inline void delay(uint32_t ms) { sleep_ms(ms); }
 
 // ===========================================================================
 // Build-Time Guards
@@ -156,54 +154,6 @@ extern "C" {
   #include "tusb.h"      // TinyUSB device stack (MSC)
 }
 #include "flash_fs.h"    // flash layout + block device
-
-// ===========================================================================
-// Statusausgabe ueber USB (CDC, am PC z. B. /dev/ttyACM0)
-// ---------------------------------------------------------------------------
-// Im Spielmodus meldet sich das Geraet mit Laufwerk (ohne Medium, siehe
-// usb_msc.c) und serieller Schnittstelle. dbg() schreibt eine Zeile und
-// wartet kurz, bis sie wirklich beim PC ist - so kommt auch die letzte
-// Meldung vor einem Absturz noch an. Ohne geoeffnetes Terminal kostet
-// dbg() fast nichts. tud_task() laeuft in delay() und einmal pro Bild.
-// ===========================================================================
-extern "C" volatile bool g_msc_medium_present;
-static bool g_log_usb = false;
-
-static void usb_pump_us(uint32_t us) {
-    uint64_t end = time_us_64() + us;
-    do { tud_task(); } while (time_us_64() < end);
-}
-
-static void dbg(const char *fmt, ...) {
-    if (!g_log_usb) return;
-    tud_task();
-    if (!tud_cdc_connected()) return;
-    char buf[160];
-    int n = snprintf(buf, sizeof(buf), "[%7lu] ", (unsigned long)(time_us_64() / 1000));
-    va_list ap;
-    va_start(ap, fmt);
-    n += vsnprintf(buf + n, sizeof(buf) - n - 2, fmt, ap);
-    va_end(ap);
-    if (n > (int)sizeof(buf) - 3) n = (int)sizeof(buf) - 3;
-    buf[n++] = '\r';
-    buf[n++] = '\n';
-    uint32_t done = 0;
-    uint64_t deadline = time_us_64() + 50000;   // max. 50 ms pro Zeile
-    while (done < (uint32_t)n && time_us_64() < deadline) {
-        done += tud_cdc_write(buf + done, n - done);
-        tud_cdc_write_flush();
-        tud_task();
-    }
-    // warten, bis der Sendepuffer leer ist (Zeile ist beim PC)
-    while (tud_cdc_write_available() < CFG_TUD_CDC_TX_BUFSIZE && time_us_64() < deadline) {
-        tud_task();
-    }
-}
-
-static void delay(uint32_t ms) {
-    if (g_log_usb) usb_pump_us(ms * 1000);
-    else sleep_ms(ms);
-}
 
 #include "pb_input.h"
 
@@ -1236,46 +1186,10 @@ static void show_fatal_error(const char *kind, const char *detail) {
 }
 
 // ===========================================================================
-// Fehlersuche: Absturzanzeige und Neustart-Erkennung
-// ---------------------------------------------------------------------------
-// * HardFault (beide Kerne): Bildschirm zeigt "CRASH" mit Kern, PC und LR und
-//   bleibt stehen. PC/LR zuordnen mit
-//     arm-none-eabi-addr2line -e build/<firmware>.elf <Adresse>
-// * Spur: Jeder Schritt des Spielstarts schreibt seine Nummer in nicht
-//   initialisiertes RAM (ueberlebt jeden Reset ausser Stromverlust), im
-//   Spiel zaehlt sie die Bilder. Der naechste Start schreibt die Spur und die
-//   Reset-Ursache des Chips ins USB-Log:
-//     POR = Stromeinbruch/Einschalten, RUN = RESET-Taste,
-//     none = kein Hardware-Reset (Programm ist an den Anfang gesprungen).
+// Absturzanzeige: Bei einem HardFault (beide Kerne) zeigt der Bildschirm
+// "CRASH" mit Kern, PC und LR und bleibt stehen. Zuordnen mit
+//   arm-none-eabi-addr2line -e build/<firmware>.elf <Adresse>
 // ===========================================================================
-#define CRUMB_MAGIC 0x47424D52u   // "GBMR"
-static uint32_t __uninitialized_ram(g_crumb_magic);
-static uint32_t __uninitialized_ram(g_crumb_stage);
-static uint32_t __uninitialized_ram(g_crumb_frames);
-
-enum {
-    CRUMB_MENU = 1,       // im Menue
-    CRUMB_ROM_CHOSEN,     // Spiel gewaehlt, vor dem Oeffnen
-    CRUMB_ROM_OPEN,       // Datei geoeffnet (ggf. umkopiert)
-    CRUMB_GB_INIT,        // Peanut-GB initialisiert
-    CRUMB_AUDIO,          // Ton initialisiert
-    CRUMB_SAVE,           // Spielstand geladen
-    CRUMB_SPLASH,         // Steuerungsbild gezeigt
-    CRUMB_CORE1,          // Kern 1 gestartet
-    CRUMB_RUNNING,        // im Spiel (g_crumb_frames zaehlt)
-};
-static const char *const kCrumbNames[] = {
-    "?", "menu", "rom chosen", "rom open", "gb init", "audio init",
-    "save loaded", "controls", "core1 start", "in game",
-};
-
-static inline void crumb(uint32_t stage) {
-    g_crumb_magic = CRUMB_MAGIC;
-    g_crumb_stage = stage;
-    g_crumb_frames = 0;
-    dbg("step %lu: %s", (unsigned long)stage, kCrumbNames[stage]);
-}
-
 extern "C" void __not_in_flash_func(hardfault_report)(uint32_t *frame) {
     uint32_t pc = frame[6];
     uint32_t lr = frame[5];
@@ -1289,18 +1203,7 @@ extern "C" void __not_in_flash_func(hardfault_report)(uint32_t *frame) {
     st7789_draw_text(8, 30, line, 0xFFFF, 0x0000, 1);
     snprintf(line, sizeof(line), "LR %08lX", (unsigned long)lr);
     st7789_draw_text(8, 42, line, 0xFFFF, 0x0000, 1);
-    // Auch ueber USB melden. Im HardFault laufen keine Interrupts, also den
-    // USB-Interrupt-Handler selbst aufrufen.
-    if (g_log_usb && core == 0) {
-        char msg[64];
-        int n = snprintf(msg, sizeof(msg), "CRASH core %u PC %08lX LR %08lX\r\n",
-                         core, (unsigned long)pc, (unsigned long)lr);
-        tud_cdc_write(msg, n);
-        tud_cdc_write_flush();
-    }
-    while (true) {
-        if (g_log_usb && core == 0) { tud_int_handler(0); tud_task(); }
-    }
+    while (true) tight_loop_contents();
 }
 
 // Ersetzt den schwachen isr_hardfault des SDK (dort nur "bkpt").
@@ -1317,12 +1220,6 @@ extern "C" __attribute__((naked)) void isr_hardfault(void) {
         "2:                   \n"
         "ldr  r1, =hardfault_report \n"
         "bx   r1              \n");
-}
-
-// Spur vom letzten Lauf nur noch ins USB-Log schreiben (die Anzeige
-// "LAST GAME START" auf dem Display ist auf Wunsch entfallen).
-static void check_restart_in_game() {
-    crumb(CRUMB_MENU);
 }
 
 // ===========================================================================
@@ -1539,29 +1436,6 @@ void setup() {
         // unreachable
     }
 
-    // USB fuer die Statusausgabe starten (Laufwerk ohne Medium)
-    g_msc_medium_present = false;
-    tud_init(BOARD_TUD_RHPORT);
-    g_log_usb = true;
-    // Host anmelden lassen und bis 1,5 s auf ein geoeffnetes Terminal warten,
-    // damit die Startmeldungen (Reset-Ursache) nicht verloren gehen.
-    {
-        uint64_t end = time_us_64() + 1500000;
-        while (time_us_64() < end && !tud_cdc_connected()) tud_task();
-        usb_pump_us(50000);
-    }
-    {
-        uint32_t r = vreg_and_chip_reset_hw->chip_reset;
-        dbg("=== PicoBoyGB start (%s) sys %lu kHz, flash div %d ===",
-            PB_BOARD_PICOBOY ? "PicoBoy Color" : "Waveshare",
-            (unsigned long)(clock_get_hz(clk_sys) / 1000), (int)PICO_FLASH_SPI_CLKDIV);
-        dbg("chip_reset 0x%08lX  crumb magic %s stage %lu frames %lu",
-            (unsigned long)r, g_crumb_magic == CRUMB_MAGIC ? "ok" : "--",
-            (unsigned long)g_crumb_stage, (unsigned long)g_crumb_frames);
-    }
-
-    check_restart_in_game();
-
     // Game-Boy-Rahmen fuer Menue und Spiel
     draw_bezel();
 
@@ -1579,13 +1453,8 @@ void setup() {
     // ---- Menue + ROM-Auswahl ---------------------------------------------
     if (fs_ok) {
         int idx = run_main_menu();
-        crumb(CRUMB_ROM_CHOSEN);
         // 4-KB-Puffer fuer ein eventuelles Umkopieren (Frame-Buffer, noch frei).
         fatfs_select_rom(g_rom_names[idx], fs_scratch_4k());
-        crumb(CRUMB_ROM_OPEN);
-        dbg("rom %s at %p, %lu bytes, type 0x%02X, rom code 0x%02X, ram code 0x%02X",
-            g_rom_names[idx], active_rom, (unsigned long)active_rom_len,
-            active_rom[0x147], active_rom[0x148], active_rom[0x149]);
         fs_unmount();
     } else {
         // Format failed -> flash region unwritable. Halt with a hint.
@@ -1615,33 +1484,24 @@ void setup() {
 #if ENABLE_LCD
     gb_init_lcd(&gb, &lcd_draw_line);
 #endif
-    crumb(CRUMB_GB_INIT);
 
 #if ENABLE_SOUND
     audio_init();
     // PWM auf dem Lautsprecher-Pin nur, wenn Ton eingeschaltet ist. Beim
     // alten PicoBoy Color brach mit laufendem PWM (50 % Tastverhaeltnis,
     // auch bei "Audio: OFF") die Versorgung zusammen: Neustart direkt nach
-    // dem Spielstart, per USB-Log gefunden.
+    // dem Spielstart.
     if (g_audio_enabled) {
         audio_pwm_set_bias((uint16_t)kAudioMid, (uint16_t)kAudioSwing);
-        dbg("audio ON: mid %u swing %u, %u Hz, starting PWM GP15",
-            kAudioMid, kAudioSwing, (unsigned)AUDIO_SAMPLE_RATE);
         audio_pwm_init(AUDIO_SAMPLE_RATE);
-        dbg("audio PWM running");
-    } else {
-        dbg("audio OFF (no PWM)");
     }
 #endif
-    crumb(CRUMB_AUDIO);
 
     // Save laden, falls vorhanden
     uint32_t save_size = gb_get_save_size(&gb);
     if (save_size > 0 && save_size <= sizeof(cart_ram)) {
         read_save(cart_ram, save_size);
     }
-
-    crumb(CRUMB_SAVE);
 
     // Steuerungs-Splash 2 Sekunden lang im GB-Bildschirm-Bereich,
     // mit der gleichen Palette die der Emulator nachher nutzt.
@@ -1679,9 +1539,7 @@ void setup() {
     // Display-Worker auf Core 1 starten, DMA-Channel reservieren.
     // Ab jetzt schreibt lcd_draw_line nur noch in den Frame-Buffer und
     // signalisiert Core 1 am Frame-Ende.
-    crumb(CRUMB_SPLASH);
     start_display_core();
-    crumb(CRUMB_CORE1);
 }
 
 // ===========================================================================
@@ -1689,9 +1547,6 @@ void setup() {
 // ===========================================================================
 
 void loop() {
-    if (g_crumb_stage != CRUMB_RUNNING) g_crumb_stage = CRUMB_RUNNING;
-    ++g_crumb_frames;
-
     // ---- Ein Frame emulieren ----
     gb.gb_frame = 0;
     do {
@@ -1715,18 +1570,6 @@ void loop() {
     gb.direct.joypad_bits.b      = !in.btn_b;
     gb.direct.joypad_bits.start  = !in.btn_start;
     gb.direct.joypad_bits.select = !in.btn_select;
-
-    // ---- USB bedienen, einmal pro Sekunde Status ----
-    tud_task();
-    static uint64_t log_t0 = 0;
-    static uint32_t log_frames = 0;
-    ++log_frames;
-    if (log_t0 == 0) log_t0 = time_us_64();
-    if (time_us_64() - log_t0 >= 1000000) {
-        dbg("in game: frame %lu, %lu fps", (unsigned long)g_crumb_frames, (unsigned long)log_frames);
-        log_frames = 0;
-        log_t0 += 1000000;
-    }
 
     // ---- Bremse auf Originaltempo (59,73 Bilder/s = 16 742 us) ----
     // Ohne sie laeuft der Emulator bei ruhigem Bild (Dirty-Box leer, Ton aus)

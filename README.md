@@ -20,6 +20,11 @@ Die Pins stehen in [`src/picoboy_pins.h`](src/picoboy_pins.h), umgeschaltet
 * ROMs liegen auf einem USB-Laufwerk im Flash (1,69 MB) und werden direkt
   von dort gelesen, ohne Umkopieren
 
+## Download
+
+Fertige Firmwares gibt es unter
+[Releases](https://github.com/hcl1981/pbcgb-rp2040/releases).
+
 ## Bedienung
 
 | | Waveshare-Gerät | PicoBoy Color |
@@ -63,13 +68,13 @@ Gebraucht werden das Pico SDK (getestet mit 2.2.0; `PICO_SDK_PATH`, sonst
 | `LCD_SPI_HZ` | 62500000 | angefragter Display-Takt; wird 200 MHz / 4 = 50 MHz |
 
 Der Bau bricht ab, wenn eine Firmware größer als 256 KB wird (sie ragte sonst
-ins Laufwerk); zurzeit sind es rund 90 KB.
+ins Laufwerk); zurzeit sind es rund 85 KB.
 
 ## Ton am PicoBoy Color
 
 Der Lautsprecher hängt an GP15 hinter einem Tiefpass, und die Versorgung des
-alten PicoBoy Color verträgt keinen großen Dauerstrom. Am Gerät gemessen (über
-das USB-Protokoll, siehe unten):
+alten PicoBoy Color verträgt keinen großen Dauerstrom. Am Gerät gemessen
+(während der Entwicklung über ein USB-Protokoll):
 
 | PWM-Ruhepegel | Ergebnis |
 |---|---|
@@ -87,26 +92,11 @@ Tontest unter [`tools/audiotest`](tools/audiotest).
 Die Tonwerte entstehen mit 22 222 Hz, passend zum 45-µs-Takt der Ausgabe
 (mit 22 050 Hz lief der Puffer leer und es knackte).
 
-## Fehlersuche: USB-Protokoll
+## Absturzanzeige
 
-Im Spielmodus meldet sich das Gerät am PC mit einer seriellen Schnittstelle
-(`/dev/ttyACM0`, CDC) und einem Laufwerk ohne Medium (damit der PC nicht in den
-Flash schreibt, den der Emulator liest). Die Firmware meldet dort den Takt,
-die Reset-Ursache des letzten Starts, jeden Schritt beim Spielstart und im
-Spiel einmal pro Sekunde die Bildrate:
-
-```
-=== PicoBoyGB start (PicoBoy Color) sys 200000 kHz, flash div 4 ===
-chip_reset 0x00010000  crumb magic ok stage 9 frames 2076
-step 2: rom chosen
-...
-in game: frame 169, 60 fps
-```
-
-`chip_reset`: `0x100` = Stromausfall/Einschalten, `0x10000` = RESET-Taste.
-Ein Prozessorfehler bleibt als `CRASH core … PC … LR …` auf dem Display stehen
-(und kommt über USB); `arm-none-eabi-addr2line -e build/<firmware>.elf <PC>`
-zeigt die Stelle.
+Ein Prozessorfehler bleibt als `CRASH core … PC … LR …` auf dem Display
+stehen; `arm-none-eabi-addr2line -e build/<firmware>.elf <PC>` zeigt die
+Stelle.
 
 ## Flash-Aufteilung (2 MB)
 
